@@ -84,7 +84,7 @@ export const sendSignUpEmail = inngest.createFunction(
       });
       return (
         completion.choices[0]?.message?.content ||
-        "Thanks for joining Signalist. You now have the tools to track markets and make smarter moves."
+        "Thanks for joining StockPulse. You now have the tools to track markets and make smarter moves."
       );
     });
 

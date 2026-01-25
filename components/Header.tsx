@@ -1,4 +1,3 @@
-
 'use client';
 
 import Link from "next/link";
@@ -12,11 +11,11 @@ export default function Header({ user }: { user: User }) {
       <div className="container header-wrapper">
         <Link href="/">
           <Image 
-            src="/assets/icons/logo.svg" 
-            alt="Signalist logo" 
+            src="/assets/icons/stock.svg" 
+            alt="StockPulse logo" 
             width={140} 
             height={32} 
-            className="h-8 w-auto cursor-pointer" 
+            className="h-13.5 w-auto cursor-pointer" 
           />
         </Link>
         <nav className="hidden sm:block">
