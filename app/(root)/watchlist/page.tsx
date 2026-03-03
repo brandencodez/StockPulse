@@ -7,21 +7,23 @@ import PortfolioRiskMeter from '@/components/PortfolioRiskMeter';
 import WatchlistNews from '@/app/(root)/watchlist/WatchlistNews';
 
 const Watchlist = async () => {
-  const watchlist = await getWatchlistWithData(); 
+  // Run independent fetches in parallel
+  const [watchlist, initialStocks] = await Promise.all([
+    getWatchlistWithData(),
+    searchStocks(),
+  ]);
   
-  // Fetch minimal data for Risk Calculator
+  // Fetch news needs watchlist symbols, so runs after
+  const symbols = watchlist.map(item => item.symbol);
+  const newsData = symbols.length > 0 ? await getWatchlistNews(symbols) : {};
+
+  // Minimal data for Risk Calculator
   const riskWatchlist = watchlist.map(item => ({
     symbol: item.symbol,
     company: item.company,
     stock: { sector: item.stock.sector },
     currentData: item.currentData
   }));
-
-  // Fetch news for all watchlist stocks
-  const symbols = watchlist.map(item => item.symbol);
-  const newsData = await getWatchlistNews(symbols);
-  
-  const initialStocks = await searchStocks();
 
   if (watchlist.length === 0) {
     return (

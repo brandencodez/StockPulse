@@ -137,20 +137,36 @@ export const getFormattedTodayDate = () => {
 };
 
 
-//ENHANCED fetchJSON WITH RATE LIMITING + CACHING
+//ENHANCED fetchJSON WITH RATE LIMITING + CACHING + NEXT.JS REVALIDATION
 
-// Add this generic type signature
-export async function fetchJSON<T = any>(url: string, options: RequestInit = {}): Promise<T> {
-  // 1. DETERMINE CACHE STRATEGY
+export async function fetchJSON<T = any>(url: string): Promise<T> {
+  // 1. DETERMINE CACHE STRATEGY BASED ON ENDPOINT TYPE
   const isQuote = url.includes('/quote?');
   const isProfile = url.includes('/stock/profile2?');
-  const cache = isQuote 
-    ? stockQuoteCache 
-    : isProfile 
-      ? stockProfileCache 
-      : newsCache;
+  const isMetric = url.includes('/stock/metric?');
+  const isNews = url.includes('/news') || url.includes('/company-news');
+  const isSearch = url.includes('/search?');
 
-  // Create cache key (symbol-based for Finnhub endpoints)
+  const memCache = isQuote
+    ? stockQuoteCache
+    : isProfile
+      ? stockProfileCache
+      : isSearch
+        ? searchCache
+        : newsCache;
+
+  // Next.js fetch-level revalidation (seconds)
+  const revalidateSec = isProfile
+    ? 3600   // 1 hour — profiles rarely change
+    : isMetric
+      ? 1800 // 30 min — financials
+      : isNews
+        ? 600  // 10 min — news
+        : isSearch
+          ? 1800 // 30 min — search results
+          : 30;  // 30 sec — live quotes
+
+  // Normalized cache key (strip API token for dedup)
   let cacheKey = url;
   try {
     const urlObj = new URL(url);
@@ -158,31 +174,30 @@ export async function fetchJSON<T = any>(url: string, options: RequestInit = {})
     if (symbol) {
       cacheKey = `${urlObj.pathname}?symbol=${symbol}`;
     }
-  } catch (e) {
+  } catch (_e) {
     // Fallback to full URL if parsing fails
   }
 
   // 2. RETURN CACHED DATA IF AVAILABLE
-  const cached = cache.get(cacheKey) as T | null; 
+  const cached = memCache.get(cacheKey) as T | null;
   if (cached) {
     console.log(`[CACHE HIT] ${cacheKey}`);
     return cached;
   }
 
-  // 3. EXECUTE WITH RATE LIMITING
+  // 3. EXECUTE WITH RATE LIMITING (concurrent — up to 25 req/sec)
   try {
-    const result = await finnhubRateLimiter.execute(async (): Promise<T> => { 
-      console.log(`[FETCHING] ${url}`);
+    const result = await finnhubRateLimiter.execute(async (): Promise<T> => {
+      console.log(`[FETCHING] ${cacheKey}`);
       const response = await fetch(url, {
-        ...options,
-        next: { revalidate: 0 }, // Disable Next.js fetch cache
+        next: { revalidate: revalidateSec },
       });
 
-      // 4. HANDLE 429 ERRORS (retry once after 2s delay)
+      // 4. HANDLE 429 ERRORS (retry once after 1s delay)
       if (response.status === 429) {
-        console.warn('⚠️ Finnhub rate limited - retrying in 2s');
-        await delay(2000);
-        return fetchJSON<T>(url, options); 
+        console.warn('⚠️ Finnhub rate limited — retrying in 1s');
+        await delay(1000);
+        return fetchJSON<T>(url);
       }
 
       if (!response.ok) {
@@ -192,11 +207,10 @@ export async function fetchJSON<T = any>(url: string, options: RequestInit = {})
       return (await response.json()) as T;
     });
 
-
     // 5. CACHE SUCCESSFUL RESPONSE
-    cache.set(cacheKey, result);
+    memCache.set(cacheKey, result);
     return result;
-  }  catch (error) {
+  } catch (error) {
     // 6. STALE CACHE FALLBACK
     if (cached) {
       console.warn(`[STALE CACHE] Using outdated data for ${cacheKey}`);
@@ -213,65 +227,74 @@ export function getPastDate(days: number): string {
 }
 
 
-//  RATE LIMITER
+//  CONCURRENT RATE LIMITER (Token-bucket style, 25 req/sec for 30/sec Finnhub limit)
 
 
 class RateLimiter {
-  private queue: Array<() => Promise<any>> = [];
-  private processing = false;
-  private lastRequestTime = 0;
-  private minInterval: number;
+  private timestamps: number[] = [];
+  private maxPerSecond: number;
+  private pendingQueue: Array<{
+    fn: () => Promise<any>;
+    resolve: (v: any) => void;
+    reject: (e: any) => void;
+  }> = [];
+  private drainScheduled = false;
 
-  constructor(requestsPerMinute: number = 50) {
-    // 50 requests per minute with buffer 
-    this.minInterval = (60 * 1000) / requestsPerMinute;
+  constructor(maxPerSecond: number = 25) {
+    this.maxPerSecond = maxPerSecond;
   }
 
   async execute<T>(fn: () => Promise<T>): Promise<T> {
-    return new Promise((resolve, reject) => {
-      this.queue.push(async () => {
-        try {
-          const result = await fn();
-          resolve(result);
-        } catch (error) {
-          reject(error);
-        }
-      });
-
-      if (!this.processing) {
-        this.processQueue();
-      }
+    return new Promise<T>((resolve, reject) => {
+      this.pendingQueue.push({ fn: fn as () => Promise<any>, resolve, reject });
+      this.drain();
     });
   }
 
-  private async processQueue() {
-    if (this.queue.length === 0) {
-      this.processing = false;
-      return;
-    }
-
-    this.processing = true;
-    const task = this.queue.shift()!;
-
-    // Wait if needed to respect rate limit
+  private cleanTimestamps() {
     const now = Date.now();
-    const timeSinceLastRequest = now - this.lastRequestTime;
-    if (timeSinceLastRequest < this.minInterval) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, this.minInterval - timeSinceLastRequest)
-      );
+    this.timestamps = this.timestamps.filter((t) => now - t < 1000);
+  }
+
+  private drain() {
+    this.cleanTimestamps();
+
+    // Launch as many concurrent requests as the rate limit allows
+    while (
+      this.pendingQueue.length > 0 &&
+      this.timestamps.length < this.maxPerSecond
+    ) {
+      const item = this.pendingQueue.shift()!;
+      this.timestamps.push(Date.now());
+
+      // Fire without awaiting — enables true concurrency
+      item
+        .fn()
+        .then((result) => {
+          item.resolve(result);
+          this.drain(); // free slot → try next
+        })
+        .catch((error) => {
+          item.reject(error);
+          this.drain();
+        });
     }
 
-    this.lastRequestTime = Date.now();
-    await task();
-
-    
-    this.processQueue();
+    // Schedule retry for remaining items when oldest timestamp expires
+    if (this.pendingQueue.length > 0 && !this.drainScheduled) {
+      this.drainScheduled = true;
+      const oldest = this.timestamps[0] ?? Date.now();
+      const waitMs = Math.max(50, 1000 - (Date.now() - oldest) + 10);
+      setTimeout(() => {
+        this.drainScheduled = false;
+        this.drain();
+      }, waitMs);
+    }
   }
 }
 
-// Export singleton instance for Finnhub API
-export const finnhubRateLimiter = new RateLimiter(50);
+// Export singleton — allows ~25 concurrent requests per second (safe buffer for 30/sec Finnhub limit)
+export const finnhubRateLimiter = new RateLimiter(25);
 
 
 // CACHE SYSTEM

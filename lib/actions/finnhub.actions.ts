@@ -124,7 +124,7 @@ export const searchStocks = cache(
                 sym
               )}&token=${token}`;
               // Revalidate every hour
-              const profile = await fetchJSON(url, 3600 as unknown as RequestInit);
+              const profile = await fetchJSON(url);
               return { sym, profile } as { sym: string; profile: any };
             } catch (e) {
               console.error('Error fetching profile2 for', sym, e);
@@ -156,7 +156,7 @@ export const searchStocks = cache(
         const url = `${FINNHUB_BASE_URL}/search?q=${encodeURIComponent(
           trimmed
         )}&token=${token}`;
-        const data = await fetchJSON(url, 1800 as unknown as RequestInit);
+        const data = await fetchJSON(url);
         results = Array.isArray(data?.result) ? data.result : [];
       }
 
@@ -203,12 +203,10 @@ export const getStocksDetails = cache(async (symbol: string) => {
         `${FINNHUB_BASE_URL}/quote?symbol=${cleanSymbol}&token=${FINNHUB_API_KEY}`
       ),
       fetchJSON(
-        `${FINNHUB_BASE_URL}/stock/profile2?symbol=${cleanSymbol}&token=${FINNHUB_API_KEY}`,
-        3600 as unknown as RequestInit
+        `${FINNHUB_BASE_URL}/stock/profile2?symbol=${cleanSymbol}&token=${FINNHUB_API_KEY}`
       ),
       fetchJSON(
-        `${FINNHUB_BASE_URL}/stock/metric?symbol=${cleanSymbol}&metric=all&token=${FINNHUB_API_KEY}`,
-        1800 as unknown as RequestInit
+        `${FINNHUB_BASE_URL}/stock/metric?symbol=${cleanSymbol}&metric=all&token=${FINNHUB_API_KEY}`
       ),
     ]);
 
