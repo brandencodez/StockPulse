@@ -3,6 +3,74 @@ import { auth } from "@/lib/better-auth/auth";
 import { headers } from "next/headers";
 import { getWatchlistSymbolsByEmail } from "@/lib/actions/watchlist.actions";
 
+type Recommendation = { symbol: string; reason: string; risk: string };
+
+function normalizeIndustry(value: string): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/[^a-z-\/]/g, "");
+}
+
+function resolveIndustryKey(preferredIndustry: string): string {
+  const normalized = normalizeIndustry(preferredIndustry);
+
+  const directMap: Record<string, string> = {
+    technology: "technology",
+    healthcare: "healthcare",
+    finance: "finance",
+    energy: "energy",
+    consumer: "consumer",
+    "consumer-goods": "consumer",
+    "real-estate": "real-estate",
+    mixed: "mixed",
+    "mixed/diversified": "mixed",
+    diversified: "mixed"
+  };
+
+  if (directMap[normalized]) return directMap[normalized];
+
+  // Fuzzy aliases for profile values that vary slightly.
+  if (normalized.includes("tech")) return "technology";
+  if (normalized.includes("health")) return "healthcare";
+  if (normalized.includes("finan") || normalized.includes("bank")) return "finance";
+  if (normalized.includes("energy") || normalized.includes("oil") || normalized.includes("utility")) return "energy";
+  if (normalized.includes("consumer") || normalized.includes("retail")) return "consumer";
+  if (normalized.includes("real") || normalized.includes("estate") || normalized.includes("reit")) return "real-estate";
+  if (normalized.includes("mixed") || normalized.includes("divers")) return "mixed";
+
+  return "mixed";
+}
+
+function buildFallbackRecommendations(
+  relevantStocks: string[],
+  watchlistSymbols: string[],
+  riskTolerance: string,
+  investmentGoals: string
+): Recommendation[] {
+  const watchlistSet = new Set((watchlistSymbols || []).map((s) => s.toUpperCase()));
+  const selected = relevantStocks
+    .filter((s) => !watchlistSet.has(s.toUpperCase()))
+    .slice(0, 5);
+
+  const goal = String(investmentGoals || "balanced").toLowerCase();
+  const reasonByGoal: Record<string, string> = {
+    growth: "Strong growth profile in its sector",
+    income: "Reliable cash flow with income potential",
+    balanced: "Balances stability and upside potential",
+    preservation: "Defensive profile with lower volatility"
+  };
+
+  const defaultReason = reasonByGoal[goal] || reasonByGoal.balanced;
+
+  return selected.map((symbol) => ({
+    symbol,
+    reason: defaultReason,
+    risk: String(riskTolerance || "moderate")
+  }));
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { api } = await auth();
@@ -88,18 +156,8 @@ export async function GET(req: NextRequest) {
       ]
     };
 
-    // Map user's preferredIndustry to stock universe keys
-    const industryMap: Record<string, string> = {
-      'Technology': 'technology',
-      'Healthcare': 'healthcare',
-      'Finance': 'finance',
-      'Energy': 'energy',
-      'Consumer Goods': 'consumer',
-      'Real Estate': 'real-estate',
-      'Mixed/Diversified': 'mixed'
-    };
-
-    const industryKey = industryMap[preferredIndustry] || 'mixed';
+    // Resolve preferred industry robustly to avoid accidental fallback to mixed.
+    const industryKey = resolveIndustryKey(preferredIndustry);
     const relevantStocks = stockUniverses[industryKey] || stockUniverses.mixed;
 
     // Industry descriptions for better AI context
@@ -212,7 +270,7 @@ Output format (JSON only, no markdown, no explanations):
           'Authorization': `Bearer ${groqApiKey}`
         },
         body: JSON.stringify({
-          model: 'moonshotai/kimi-k2-instruct-0905',
+          model: 'qwen/qwen3-32b',
           messages: [
             { 
               role: 'system', 
@@ -235,7 +293,12 @@ Output format (JSON only, no markdown, no explanations):
       console.error("Groq API Error:", errorText);
       return NextResponse.json({ 
         error: "Failed to generate recommendations",
-        recommendations: []
+        recommendations: buildFallbackRecommendations(
+          relevantStocks,
+          watchlistSymbols,
+          riskTolerance,
+          investmentGoals
+        )
       }, { status: 500 });
     }
 
@@ -245,31 +308,45 @@ Output format (JSON only, no markdown, no explanations):
     if (!aiResponse) {
       return NextResponse.json({ 
         error: "No response from AI",
-        recommendations: []
+        recommendations: buildFallbackRecommendations(
+          relevantStocks,
+          watchlistSymbols,
+          riskTolerance,
+          investmentGoals
+        )
       }, { status: 500 });
     }
 
-    let parsedRecommendations: { symbol: string; reason: string; risk: string }[] = [];
+    let parsedRecommendations: Recommendation[] = [];
 
     try {
       let cleanedResponse = aiResponse.trim();
 
-      // Remove <think>...</think> blocks
+      // Remove complete and unterminated think blocks.
       cleanedResponse = cleanedResponse.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      cleanedResponse = cleanedResponse.replace(/<think>[\s\S]*$/gi, '').trim();
 
       // Remove markdown code fences
       cleanedResponse = cleanedResponse.replace(/```json\s*/gi, '');
       cleanedResponse = cleanedResponse.replace(/```\s*/g, '');
 
-      // Extract JSON array
+      // First try strict JSON array extraction.
       const start = cleanedResponse.indexOf('[');
       const end = cleanedResponse.lastIndexOf(']');
-      if (start === -1 || end === -1 || end <= start) {
-        throw new Error("No valid JSON array found");
-      }
-      const jsonStr = cleanedResponse.slice(start, end + 1);
 
-      parsedRecommendations = JSON.parse(jsonStr);
+      if (start !== -1 && end !== -1 && end > start) {
+        const jsonStr = cleanedResponse.slice(start, end + 1);
+        parsedRecommendations = JSON.parse(jsonStr);
+      } else {
+        // Fallback: support object-style payloads like { recommendations: [...] }.
+        const objStart = cleanedResponse.indexOf('{');
+        const objEnd = cleanedResponse.lastIndexOf('}');
+        if (objStart !== -1 && objEnd !== -1 && objEnd > objStart) {
+          const objStr = cleanedResponse.slice(objStart, objEnd + 1);
+          const parsedObj = JSON.parse(objStr);
+          parsedRecommendations = parsedObj?.recommendations || parsedObj?.data || [];
+        }
+      }
 
       if (!Array.isArray(parsedRecommendations)) {
         throw new Error("Parsed response is not an array");
@@ -293,14 +370,29 @@ Output format (JSON only, no markdown, no explanations):
         .filter(rec => rec.symbol && rec.reason && rec.risk)
         .slice(0, 5);
 
+      // Top up to always return up to 5 items when AI output is partial after filtering.
+      if (parsedRecommendations.length < 5) {
+        const existing = new Set(parsedRecommendations.map((r) => r.symbol.toUpperCase()));
+        const fallbackPool = buildFallbackRecommendations(
+          relevantStocks,
+          watchlistSymbols,
+          riskTolerance,
+          investmentGoals
+        ).filter((r) => !existing.has(r.symbol.toUpperCase()));
+
+        parsedRecommendations = [...parsedRecommendations, ...fallbackPool].slice(0, 5);
+      }
+
     } catch (e) {
       console.error("Failed to parse AI response:", aiResponse);
       console.error("Parse error:", e);
       
-      return NextResponse.json({ 
-        error: "Failed to parse AI recommendations",
-        recommendations: []
-      }, { status: 200 });
+      parsedRecommendations = buildFallbackRecommendations(
+        relevantStocks,
+        watchlistSymbols,
+        riskTolerance,
+        investmentGoals
+      );
     }
 
     return NextResponse.json({ 
