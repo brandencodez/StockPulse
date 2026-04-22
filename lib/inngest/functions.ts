@@ -37,6 +37,22 @@ type MarketNewsArticle = {
   image?: string;
 };
 
+type PromptNewsArticle = {
+  symbol?: string;
+  datetime?: number | string;
+  headline?: string;
+  summary?: string;
+  source?: string;
+  url?: string;
+};
+
+const CHARS_PER_TOKEN_ESTIMATE = 4;
+const NEWS_SUMMARY_MAX_OUTPUT_TOKENS = 1000;
+const NEWS_SUMMARY_TOTAL_TOKEN_BUDGET = 5600;
+const NEWS_SUMMARY_INPUT_CHAR_BUDGET =
+  (NEWS_SUMMARY_TOTAL_TOKEN_BUDGET - NEWS_SUMMARY_MAX_OUTPUT_TOKENS) *
+  CHARS_PER_TOKEN_ESTIMATE;
+
 function htmlToPlainText(html: string): string {
   if (!html) return "";
   return html
@@ -53,6 +69,50 @@ function safeTrim(text: string, limit = 1500): string {
   if (text.length <= limit) return text;
   const cutoff = text.lastIndexOf(".", limit);
   return cutoff > 0 ? text.substring(0, cutoff + 1) : text.slice(0, limit);
+}
+
+function toPromptArticle(
+  article: MarketNewsArticle,
+  summaryLimit = 280
+): PromptNewsArticle {
+  return {
+    symbol: article.symbol,
+    datetime: article.datetime,
+    headline: safeTrim(article.headline || "", 140),
+    summary: safeTrim(article.summary || "", summaryLimit),
+    source: article.source,
+    url: article.url,
+  };
+}
+
+function buildNewsSummaryPrompt(
+  articles: MarketNewsArticle[],
+  maxArticles = 6,
+  summaryLimit = 280
+): string {
+  const compactArticles = articles
+    .slice(0, maxArticles)
+    .map((article) => toPromptArticle(article, summaryLimit));
+
+  let payload = compactArticles;
+  let payloadString = JSON.stringify(payload, null, 2);
+
+  // Keep shrinking until prompt size fits a safe budget under Groq TPM limits.
+  while (payloadString.length > NEWS_SUMMARY_INPUT_CHAR_BUDGET && payload.length > 1) {
+    payload = payload.slice(0, -1);
+    payloadString = JSON.stringify(payload, null, 2);
+  }
+
+  return NEWS_SUMMARY_EMAIL_PROMPT.replace("{{newsData}}", payloadString);
+}
+
+function isRequestTooLargeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Request too large") ||
+    message.includes("rate_limit_exceeded") ||
+    message.includes("tokens per minute")
+  );
 }
 
 // Welcome Email
@@ -177,21 +237,53 @@ export const sendDailyNewsSummary = inngest.createFunction(
 
       for (const { user, articles } of results) {
         try {
-          const prompt = NEWS_SUMMARY_EMAIL_PROMPT.replace(
-            "{{newsData}}",
-            JSON.stringify(articles, null, 2)
-          );
+          const prompt = buildNewsSummaryPrompt(articles, 6, 280);
 
-          const htmlSummary = await groq.chat.completions.create({
-            model: "qwen/qwen3-32b",
-            messages: [{ role: "user", content: prompt }],
-            temperature: 0.3,
-            max_tokens: 1500,
-          }).then((res) => res.choices[0]?.message?.content || "No market news.");
+          let htmlSummary = await groq.chat.completions
+            .create({
+              model: "qwen/qwen3-32b",
+              messages: [{ role: "user", content: prompt }],
+              temperature: 0.3,
+              max_tokens: NEWS_SUMMARY_MAX_OUTPUT_TOKENS,
+            })
+            .then((res) => res.choices[0]?.message?.content || "No market news.");
+
+          if (!htmlSummary) {
+            htmlSummary = "No market news.";
+          }
 
           const plainSummary = htmlToPlainText(htmlSummary);
           summaries.push({ user, htmlSummary, plainSummary });
         } catch (e) {
+          if (isRequestTooLargeError(e)) {
+            try {
+              // Retry with a smaller payload if Groq rejects the first request size.
+              const fallbackPrompt = buildNewsSummaryPrompt(articles, 3, 140);
+              const fallbackHtml = await groq.chat.completions
+                .create({
+                  model: "qwen/qwen3-32b",
+                  messages: [{ role: "user", content: fallbackPrompt }],
+                  temperature: 0.3,
+                  max_tokens: 700,
+                })
+                .then((res) => res.choices[0]?.message?.content || "No market news.");
+
+              const fallbackPlain = htmlToPlainText(fallbackHtml);
+              summaries.push({
+                user,
+                htmlSummary: fallbackHtml,
+                plainSummary: fallbackPlain,
+              });
+              continue;
+            } catch (fallbackError) {
+              console.error(
+                "⚠️ Fallback summarization also failed for:",
+                user.email,
+                fallbackError
+              );
+            }
+          }
+
           console.error("⚠️ Failed to summarize news for:", user.email, e);
           summaries.push({ user, htmlSummary: null, plainSummary: null });
         }
