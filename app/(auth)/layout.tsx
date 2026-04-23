@@ -38,13 +38,14 @@ const Layout = async ({ children }: { children: React.ReactNode }) => {
   </div>
 
         {/* ===== Dashboard Image Section ===== */}
-        <div className="flex-1 relative">
+        <div className="w-full mt-4 lg:flex-1 lg:relative h-[280px] lg:h-auto relative">
           <Image
             src="/assets/images/dashboard.png"
             alt="Dashboard Preview"
-            width={1440}
-            height={1250}
-            className="auth-dashboard-preview w-full h-auto"
+            fill                                  
+            sizes="(max-width: 1024px) 100vw, 55vw"
+            className="object-contain object-top"
+            priority
           />
         </div>
       </section>
