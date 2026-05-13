@@ -346,7 +346,7 @@ export const sendSignUpEmail = inngest.createFunction(
 // Daily News Summary
 export const sendDailyNewsSummary = inngest.createFunction(
   { id: "daily-news-summary" },
-  [{ event: "app/send.daily.news" }, { cron: "0 12 * * *"  }], // daily at 12:00 UTC
+  [{ event: "app/send.daily.news" }, { cron: "30 2 * * 1-5"  }], // 8:00 AM IST (Runs Monday to Friday)
   async ({ step }) => {
     //Get all users
     const users = await step.run("get-all-users", getAllUsersForNewsEmail);
