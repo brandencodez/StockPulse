@@ -127,14 +127,14 @@ export const WELCOME_EMAIL_TEMPLATE = `<!DOCTYPE html>
                             
                             <!-- Feature List -->
                             <ul class="mobile-text dark-text-secondary" style="margin: 0 0 30px 0; padding-left: 20px; font-size: 16px; line-height: 1.6; color: #CCDADC;">
-                                <li style="margin-bottom: 12px;">Set up your watchlist to follow your favorite stocks</li>
-                                <li style="margin-bottom: 12px;">Create price and volume alerts so you never miss a move</li>
-                                <li style="margin-bottom: 12px;">Explore the dashboard for trends and the latest market news</li>
+                                <li style="margin-bottom: 12px;">Build your watchlist to track your favorite stocks</li>
+                                <li style="margin-bottom: 12px;">Explore real-time market dashboards and detailed stock pages</li>
+                                <li style="margin-bottom: 12px;">Get personalized recommendations and a portfolio risk snapshot</li>
                             </ul>
                             
                             <!-- Additional Text -->
                             <p class="mobile-text dark-text-secondary" style="margin: 0 0 40px 0; font-size: 16px; line-height: 1.6; color: #CCDADC;">
-                                We'll keep you informed with timely updates, insights, and alerts — so you can focus on making the right calls.
+                                We'll keep you informed with timely updates and insights — so you can focus on making the right calls.
                             </p>
                             
                             <!-- CTA Button -->
@@ -150,7 +150,6 @@ export const WELCOME_EMAIL_TEMPLATE = `<!DOCTYPE html>
                             
                             <!-- Footer Text -->
                             <p class="mobile-text dark-text-muted" style="margin: 40px 0 0 0; font-size: 14px; line-height: 1.5; color: #CCDADC !important; text-align: center;">
-                               StockPulse HQ, 200 Market Street, San Francisco, CA 94105<br>
                                 <a href="#" style="color: #CCDADC !important; text-decoration: underline;">Unsubscribe</a> | 
                                 <a href="https://brandencodez-stock-market-app.vercel.app/" style="color: #CCDADC !important; text-decoration: underline;">Visit StockPulse</a><br>
                                 © 2026 StockPulse
